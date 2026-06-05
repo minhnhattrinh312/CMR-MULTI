@@ -1,0 +1,155 @@
+
+
+from lightning.pytorch.callbacks import ModelCheckpoint
+from lightning.pytorch.callbacks import LearningRateMonitor, EarlyStopping
+from torch.utils.data import DataLoader
+from lightning.pytorch.loggers import WandbLogger
+import lightning.pytorch as pl
+import glob
+import os
+from pathlib import Path
+import sys
+import random
+random.seed(42)
+src_dir = Path(__file__).resolve().parents[1]
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+
+from segment2d import Segmenter, FCDenseNet, Image_Loader
+import pandas as pd
+from hydra import compose, initialize_config_dir
+
+
+PROJECT_ROOT = src_dir.parent
+config_dir = PROJECT_ROOT / "config"
+saved_model_dir = PROJECT_ROOT / "saved_models"
+csv_path = PROJECT_ROOT / "data" / "csv_files"
+
+with initialize_config_dir(version_base=None, config_dir=str(config_dir)):
+    cfg_data = compose(config_name="data_config")
+    cfg_train = compose(config_name="train_config")
+
+
+# Load and aggregate all CSV files.
+# Fold 1 -> validation, folds 2-5 -> training.
+csv_file = csv_path / "CINE_MULTI_SAX_TR_info.csv"
+
+df = pd.read_csv(csv_file)
+df["fold"] = pd.to_numeric(df["fold"], errors="coerce")
+for fold in range(1, 6):
+    print(f"training fold {fold} for CINE_SAX_TR...")
+    # validation set: fold i, training set: remaining folds
+    list_val_subject = df[df["fold"] == fold]["path"].tolist()
+    list_train_subject = df[df["fold"] != fold]["path"].tolist()
+    print(f"Training samples: {len(list_train_subject)} | Validation samples: {len(list_val_subject)}")
+
+    model = FCDenseNet(in_channels=cfg_train.INPUT_DIM_MODEL,
+                        n_classes=cfg_data.CMR_MULTI.CINE_MULTI.SAX_TR.num_classes)
+
+
+    segmenter = Segmenter(
+        model,
+        class_weight = cfg_data.CMR_MULTI.CINE_MULTI.SAX_TR.class_weights,
+        num_classes = cfg_data.CMR_MULTI.CINE_MULTI.SAX_TR.num_classes,
+        learning_rate = cfg_train.LEARNING_RATE,
+        factor_lr = cfg_train.FACTOR_LR,
+        patience_lr = cfg_train.PATIENCE_LR,
+    )
+
+    train_dataset = Image_Loader(list_subject=list_train_subject)
+    val_dataset = Image_Loader(list_subject=list_val_subject)
+    # If wandb_logger is True, create a WandbLogger object
+    if cfg_train.LOG_WANDB:
+        wandb_logger = WandbLogger(
+            project="CMR-MULTI",
+            name=f"CINE_SAX_TR_fold{fold}",
+            resume="allow",
+        )
+    else:
+        wandb_logger = False
+
+    # Define data loaders for the training and test data
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=cfg_train.BATCH_SIZE,
+        pin_memory=True,
+        shuffle=True,
+        num_workers=cfg_train.NUM_WORKERS,
+        drop_last=True,
+        prefetch_factor=cfg_train.PREFETCH_FACTOR,
+    )
+
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=cfg_train.BATCH_SIZE * 2,
+        num_workers=cfg_train.NUM_WORKERS,
+        prefetch_factor=cfg_train.PREFETCH_FACTOR * 2,
+    )
+
+    save_dir = saved_model_dir / f"CINE_SAX_TR_fold{fold}"
+    os.makedirs(save_dir, exist_ok=True)
+    # Initialize a ModelCheckpoint callback to save the model weights after each epoch
+    check_point = ModelCheckpoint(
+        save_dir,
+        filename="dice_{avg_val_dice:0.4f}",
+        monitor="avg_val_dice",
+        mode="max",
+        save_top_k=cfg_train.SAVE_MODEL_TOP_K,
+        verbose=True,
+        save_weights_only=True,
+        auto_insert_metric_name=False,
+        save_last=True,
+    )
+
+    # Initialize a LearningRateMonitor callback to log the learning rate during training
+    lr_monitor = LearningRateMonitor(logging_interval="epoch")
+    # Initialize a EarlyStopping callback to stop training if the validation loss does not improve for a certain number of epochs
+    early_stopping = EarlyStopping(
+        monitor="avg_val_dice",
+        mode="max",
+        patience=cfg_train.PATIENCE_ES,
+        verbose=True,
+        strict=False,
+    )
+
+
+    # Define a dictionary with the parameters for the Trainer object
+    PARAMS_TRAINER = {
+        "accelerator": cfg_train.ACCELERATOR,
+        "devices": cfg_train.DEVICES,
+        "benchmark": True,
+        "enable_progress_bar": True,
+        # "overfit_batches" :5,
+        "logger": wandb_logger,
+        "callbacks": [check_point, early_stopping, lr_monitor],
+        "log_every_n_steps": 1,
+        "num_sanity_val_steps": 1,
+        "max_epochs": cfg_train.EPOCHS,
+        "precision": cfg_train.PRECISION,
+    }
+
+    # Initialize a Trainer object with the specified parameters
+    trainer = pl.Trainer(**PARAMS_TRAINER)
+    # Get a list of file paths for all non-hidden files in the SAVE_DIR directory
+    checkpoint_paths = glob.glob(os.path.join(save_dir, "*.ckpt"))
+    checkpoint_paths.sort()
+    # If there are checkpoint paths and the load_checkpoint flag is set to True
+    if checkpoint_paths and cfg_data.CMR_MULTI.CINE_MULTI.SAX_TR.is_pretrained:
+        print("using pretrained model for CINE_MULTI.SAX_TR...")
+        # Select the second checkpoint in the list (index 0)
+        checkpoint = checkpoint_paths[-1]
+        print(f"load checkpoint: {checkpoint}")
+        # Load the model weights from the selected checkpoint
+        segmenter = Segmenter.load_from_checkpoint(
+            checkpoint_path=checkpoint,
+            model=model,
+            class_weight=cfg_data.CMR_MULTI.CINE_MULTI.SAX_TR.class_weights,
+            num_classes=cfg_data.CMR_MULTI.CINE_MULTI.SAX_TR.num_classes,
+            learning_rate=cfg_train.LEARNING_RATE,
+            factor_lr=cfg_train.FACTOR_LR,
+            patience_lr=cfg_train.PATIENCE_LR,
+            strict=False,
+        )
+
+    # Train the model using the train_dataset and test_dataset data loaders
+    trainer.fit(segmenter, train_loader, val_loader)
