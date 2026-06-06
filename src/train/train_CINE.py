@@ -85,7 +85,7 @@ for fold in range(1, 6):
         if cfg_train.LOG_WANDB
         else False
     )
-    save_dir = saved_model_dir / f"CINE_SAX_TR_fold{fold}"
+    save_dir = saved_model_dir / f"CINE_fold{fold}"
     os.makedirs(save_dir, exist_ok=True)
     # Initialize a ModelCheckpoint callback to save the model weights after each epoch
     check_point = ModelCheckpoint(

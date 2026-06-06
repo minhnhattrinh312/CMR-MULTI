@@ -70,7 +70,7 @@ class Segmenter(pl.LightningModule):
             dice_class = dice_slice(y_true, y_pred, class_index=i)
             metrics[f"train_dice_{view}_{i}"] = dice_class
         # mean dice of all classes
-        self.log_dict(metrics, on_step=True, on_epoch=True, prog_bar=True, batch_size=image.size(0))
+        self.log_dict(metrics, on_step=True, on_epoch=True, prog_bar=True)
         return loss
 
     def validation_step(self, batch, batch_idx):
