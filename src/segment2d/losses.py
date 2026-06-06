@@ -34,23 +34,24 @@ class ActiveFocalContourLossMultiHead(nn.Module):
         yTrueOnehot = torch.zeros(
             y_true.size(0),
             num_classes,
-            y_true.size(1),
             y_true.size(2),
+            y_true.size(3),
             device=self.device,
         )
+
         yTrueOnehot = torch.scatter(yTrueOnehot, 1, y_true, 1)
         y_pred = torch.clamp(y_pred, min=1e-5, max=1 - 1e-5)
 
         active_focal = -yTrueOnehot * (1 + (1 - y_pred) ** self.gamma) * torch.log(y_pred) - (1 - yTrueOnehot) * (
             1 + y_pred**self.gamma
         ) * torch.log(1 - y_pred)
-        active_focal = torch.sum(active_focal, dim=[2, 3]) * self.class_weight
+        active_focal = torch.sum(active_focal, dim=[2, 3]) * class_weight
 
         active_contour = yTrueOnehot * (1 - y_pred) + (1 - yTrueOnehot) * y_pred
-        active_contour = torch.sum(active_contour, dim=[2, 3]) * self.class_weight
+        active_contour = torch.sum(active_contour, dim=[2, 3]) * class_weight
 
         loss = torch.sum(active_focal) + torch.sum(active_contour)
-        return loss / (torch.sum(self.class_weight) * y_true.size(0) * y_true.size(2) * y_true.size(3))
+        return loss / (torch.sum(class_weight) * y_true.size(0) * y_true.size(2) * y_true.size(3))
 
 
 class ActiveFocalContourLoss(nn.Module):

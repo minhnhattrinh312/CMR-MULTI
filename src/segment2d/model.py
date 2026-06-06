@@ -43,7 +43,9 @@ class Segmenter(pl.LightningModule):
         self.validation_step_outputs = []
 
     def on_fit_start(self):
-        self.training_loss = ActiveFocalContourLossMultiHead(self.device, self.class_weights_dict, self.num_classes_dict)
+        self.training_loss = ActiveFocalContourLossMultiHead(
+            self.device, self.class_weights_dict, self.num_classes_dict
+        )
 
     def on_after_batch_transfer(self, batch, dataloader_idx):
         if self.trainer.training:
@@ -66,17 +68,17 @@ class Segmenter(pl.LightningModule):
         metrics = {"train_loss": loss}
         for i in range(1, self.num_classes_dict[view]):
             dice_class = dice_slice(y_true, y_pred, class_index=i)
-            metrics[f"train_dice_class_{i}"] = dice_class
+            metrics[f"train_dice_{view}_{i}"] = dice_class
         # mean dice of all classes
-        self.log_dict(metrics, on_step=True, on_epoch=True, prog_bar=True)
+        self.log_dict(metrics, on_step=True, on_epoch=True, prog_bar=True, batch_size=image.size(0))
         return loss
 
     def validation_step(self, batch, batch_idx):
         image, y_true, view = batch
         view = view[0]
         y_pred = self.model(image, view=view)
-        loss = self.training_loss(y_true, y_pred, view=view)
-        metrics = {"val_loss": loss}
+        # loss = self.training_loss(y_true, y_pred, view=view)
+        metrics = {}
         for i in range(1, self.num_classes_dict[view]):
             dice_class = dice_slice(y_true, y_pred, class_index=i)
             metrics[f"val_dice_step_{view}_{i}"] = dice_class
@@ -84,18 +86,40 @@ class Segmenter(pl.LightningModule):
         return metrics
 
     def on_validation_epoch_end(self):
+        # Initialize storage per view/class
+        dice_accum = {
+            view: {i: [] for i in range(1, num_classes)} for view, num_classes in self.num_classes_dict.items()
+        }
+
+        # Aggregate dice from each validation_step output
+        for step_output in self.validation_step_outputs:
+            for key, value in step_output.items():
+                # key format: val_dice_step_{view}_{i}
+                parts = key.split("_")
+                view = parts[3]
+                class_idx = int(parts[4])
+                dice_accum[view][class_idx].append(value)
+
+        # Compute mean dice per view/class
         metrics = {}
-        # calculate mean dice of each class across all validation steps
-        for view, num_classes in self.num_classes_dict.items():
-            for i in range(1, num_classes):
-                dice_class = torch.mean(
-                    torch.stack([output[f"val_dice_step_{view}_{i}"] for output in self.validation_step_outputs])
-                )
-                metrics[f"val_dice_{view}_{i}"] = dice_class
-        mean_dice = torch.mean(torch.stack([metrics[f"val_dice_{view}_{i}"] for view, num_classes in self.num_classes_dict.items() for i in range(1, num_classes)]))
-        metrics["avg_val_dice"] = mean_dice
-        # clear the validation step outputs
+        for view, class_dict in dice_accum.items():
+            for i, values in class_dict.items():
+                if values:
+                    metrics[f"val_dice_{view}_{i}"] = torch.mean(torch.stack(values))
+                else:
+                    metrics[f"val_dice_{view}_{i}"] = torch.tensor(0.0, device=self.device)
+
+        # Compute overall mean dice
+        all_dice = [v for k, v in metrics.items() if k.startswith("val_dice_")]
+        if all_dice:
+            metrics["avg_val_dice"] = torch.mean(torch.stack(all_dice))
+        else:
+            metrics["avg_val_dice"] = torch.tensor(0.0, device=self.device)
+
+        # Clear stored step outputs
         self.validation_step_outputs = []
+
+        # Log metrics
         self.log_dict(metrics, prog_bar=True)
         return metrics
 

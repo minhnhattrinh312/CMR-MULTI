@@ -28,38 +28,36 @@ with initialize_config_dir(version_base=None, config_dir=str(config_dir)):
     cfg_train = compose(config_name="train_config")
 
 
-
 for fold in range(1, 6):
     print(f"training fold {fold} for CINE...")
     # validation set: fold i, training set: remaining folds
     val_files, train_files, num_classes_dict, class_weights_dict = {}, {}, {}, {}
-    
+
     for key in cfg_data.CMR_MULTI.CINE_MULTI.keys():
         csv_file = pd.read_csv(csv_path / f"CINE_MULTI_{key}_info.csv")
         val_files[key] = csv_file[csv_file["fold"] == fold]["path"].tolist()
         train_files[key] = csv_file[csv_file["fold"] != fold]["path"].tolist()
         num_classes_dict[key] = cfg_data.CMR_MULTI.CINE_MULTI[key].num_classes
         class_weights_dict[key] = cfg_data.CMR_MULTI.CINE_MULTI[key].class_weights
-        
+
         print(f"Training samples for {key}: {len(train_files[key])} | Validation samples: {len(val_files[key])}")
 
     model = MultiHeadFCDenseNet(in_channels=cfg_train.INPUT_DIM_MODEL, head_classes=num_classes_dict)
 
     segmenter = Segmenter(
         model,
-        class_weights_dict = class_weights_dict,
-        num_classes_dict = num_classes_dict,
-        learning_rate = cfg_train.LEARNING_RATE,
-        factor_lr = cfg_train.FACTOR_LR,
-        patience_lr = cfg_train.PATIENCE_LR,
+        class_weights_dict=class_weights_dict,
+        num_classes_dict=num_classes_dict,
+        learning_rate=cfg_train.LEARNING_RATE,
+        factor_lr=cfg_train.FACTOR_LR,
+        patience_lr=cfg_train.PATIENCE_LR,
         size_augmentation=cfg_data.RESIZE_DIM,
     )
 
     train_dataset = MultiViewDataset(train_files)
     val_dataset = MultiViewDataset(val_files)
     batch_sampler_train = SingleViewBatchSampler(train_dataset, batch_size=cfg_train.BATCH_SIZE)
-    batch_sampler_val = SingleViewBatchSampler(val_dataset, batch_size=cfg_train.BATCH_SIZE * 2)
-
+    batch_sampler_val = SingleViewBatchSampler(val_dataset, batch_size=cfg_train.BATCH_SIZE)
 
     # Define data loaders for the training and test data
     train_loader = DataLoader(
@@ -74,11 +72,19 @@ for fold in range(1, 6):
         val_dataset,
         batch_sampler=batch_sampler_val,
         num_workers=cfg_train.NUM_WORKERS,
-        prefetch_factor=cfg_train.PREFETCH_FACTOR * 2,
+        prefetch_factor=cfg_train.PREFETCH_FACTOR,
     )
     # If wandb_logger is True, create a WandbLogger object
 
-    wandb_logger = WandbLogger(project="CMR-MULTI",name=f"CINE_fold{fold}",resume="allow",) if cfg_train.LOG_WANDB else False
+    wandb_logger = (
+        WandbLogger(
+            project="CMR-MULTI",
+            name=f"CINE_fold{fold}",
+            resume="allow",
+        )
+        if cfg_train.LOG_WANDB
+        else False
+    )
     save_dir = saved_model_dir / f"CINE_SAX_TR_fold{fold}"
     os.makedirs(save_dir, exist_ok=True)
     # Initialize a ModelCheckpoint callback to save the model weights after each epoch
@@ -115,7 +121,7 @@ for fold in range(1, 6):
         "logger": wandb_logger,
         "callbacks": [check_point, early_stopping, lr_monitor],
         "log_every_n_steps": 1,
-        "num_sanity_val_steps": 1,
+        "num_sanity_val_steps": 3,
         "max_epochs": cfg_train.EPOCHS,
         "precision": cfg_train.PRECISION,
     }
@@ -137,9 +143,9 @@ for fold in range(1, 6):
             model=model,
             class_weights_dict=class_weights_dict,
             num_classes_dict=num_classes_dict,
-            learning_rate = cfg_train.LEARNING_RATE,
-            factor_lr = cfg_train.FACTOR_LR,
-            patience_lr = cfg_train.PATIENCE_LR,
+            learning_rate=cfg_train.LEARNING_RATE,
+            factor_lr=cfg_train.FACTOR_LR,
+            patience_lr=cfg_train.PATIENCE_LR,
             strict=False,
         )
 
