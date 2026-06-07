@@ -115,7 +115,7 @@ class Segmenter(pl.LightningModule):
             metrics["avg_val_dice"] = torch.mean(torch.stack(all_dice))
         else:
             metrics["avg_val_dice"] = torch.tensor(0.0, device=self.device)
-
+        # print(f"Validation metrics: {metrics}")
         # Clear stored step outputs
         self.validation_step_outputs = []
 

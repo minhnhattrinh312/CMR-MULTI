@@ -57,7 +57,7 @@ for fold in range(1, 6):
     train_dataset = MultiViewDataset(train_files)
     val_dataset = MultiViewDataset(val_files)
     batch_sampler_train = SingleViewBatchSampler(train_dataset, batch_size=cfg_train.BATCH_SIZE)
-    batch_sampler_val = SingleViewBatchSampler(val_dataset, batch_size=cfg_train.BATCH_SIZE)
+    batch_sampler_val = SingleViewBatchSampler(val_dataset, batch_size=cfg_train.BATCH_SIZE, shuffle=False)
 
     # Define data loaders for the training and test data
     train_loader = DataLoader(
@@ -80,7 +80,7 @@ for fold in range(1, 6):
         WandbLogger(
             project="CMR-MULTI",
             name=f"CINE_fold{fold}",
-            resume="allow",
+            resume=False,
         )
         if cfg_train.LOG_WANDB
         else False
